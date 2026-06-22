@@ -9,8 +9,8 @@ APP_NAME = os.getenv("APP_NAME", "your-app")
 @app.route("/")
 def home():
     return jsonify({
-        "app":     APP_NAME,
-        "env":     APP_ENV,
+        "app":     "Cogniwidie",
+        "env":     "Production",
         "status":  "running"
     })
 
