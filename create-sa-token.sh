@@ -1,30 +1,70 @@
 #!/bin/bash
 
-NAMESPACE="production"
-SA_NAME="jenkins-deployer"
+NAMESPACE="learning-k8s"
+SA_NAME="learning-k8s-sa"
 
-kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+echo "Creating namespace..."
+kubectl create namespace ${NAMESPACE} \
+  --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl create serviceaccount ${SA_NAME} -n ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+echo "Creating ServiceAccount..."
+kubectl create serviceaccount ${SA_NAME} \
+  -n ${NAMESPACE} \
+  --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl apply -f - <<EOF
+echo "Creating ClusterRole..."
+cat <<EOF | kubectl apply -f -
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: jenkins-deployer-role
+  name: learning-k8s-role
 rules:
   - apiGroups: ["apps"]
-    resources: ["deployments", "replicasets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    resources:
+      - deployments
+      - replicasets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+
   - apiGroups: [""]
-    resources: ["pods", "services", "endpoints", "namespaces", "serviceaccounts"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    resources:
+      - pods
+      - services
+      - endpoints
+      - namespaces
+      - serviceaccounts
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+
   - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["roles", "rolebindings"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    resources:
+      - roles
+      - rolebindings
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
 EOF
 
-kubectl apply -f - <<EOF
+echo "Creating ClusterRoleBinding..."
+cat <<EOF | kubectl apply -f -
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -34,34 +74,59 @@ subjects:
     name: ${SA_NAME}
     namespace: ${NAMESPACE}
 roleRef:
-  kind: ClusterRole
-  name: jenkins-deployer-role
   apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: learning-k8s-role
 EOF
 
-kubectl apply -f - <<EOF
+echo "Creating long-lived token Secret..."
+cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: Secret
 metadata:
-  name: ${SA_NAME}-token
+  name: learning-k8s-token
   namespace: ${NAMESPACE}
   annotations:
     kubernetes.io/service-account.name: ${SA_NAME}
 type: kubernetes.io/service-account-token
 EOF
 
-echo ""
 echo "Waiting for token to be populated..."
-sleep 5
-
-SA_TOKEN=$(kubectl get secret ${SA_NAME}-token -n ${NAMESPACE} -o jsonpath='{.data.token}' | base64 --decode)
+for i in $(seq 1 10); do
+    TOKEN=$(kubectl get secret learning-k8s-token \
+        -n ${NAMESPACE} \
+        -o jsonpath='{.data.token}' 2>/dev/null)
+    if [ -n "$TOKEN" ]; then
+        break
+    fi
+    echo "Attempt $i: Token not ready yet. Retrying in 3s..."
+    sleep 3
+done
 
 echo ""
 echo "========================================"
-echo "  Add this token to Jenkins credentials "
-echo "  Credential ID: k8s-sa-token           "
-echo "  Type: Secret text                      "
+echo "         ServiceAccount Token           "
 echo "========================================"
 echo ""
-echo "${SA_TOKEN}"
+
+kubectl get secret learning-k8s-token \
+  -n ${NAMESPACE} \
+  -o jsonpath='{.data.token}' | base64 --decode
+
 echo ""
+echo ""
+echo "========================================"
+echo "      Add This Token To Jenkins         "
+echo "========================================"
+echo ""
+echo "  Manage Jenkins"
+echo "  └── Credentials"
+echo "      └── System"
+echo "          └── Global Credentials"
+echo "              └── Add Credentials"
+echo ""
+echo "  Credential Type : Secret Text"
+echo "  Credential ID   : k8s-sa-token"
+echo "  Description     : Kubernetes Service Account Token"
+echo ""
+echo "========================================"

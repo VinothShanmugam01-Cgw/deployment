@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: learning-k8s-deployment
+  namespace: learning-k8s
+  labels:
+    app: learning-k8s
+
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: learning-k8s
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  template:
+    metadata:
+      labels:
+        app: learning-k8s
+
+    spec:
+      serviceAccountName: learning-k8s-sa
+
+      containers:
+        - name: learning-k8s
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8080
+
+          env:
+            - name: APP_ENV
+              value: production
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 5

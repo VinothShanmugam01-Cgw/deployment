@@ -4,45 +4,43 @@ pipeline {
     parameters {
         string(
             name: 'GIT_REPO_URL',
-            defaultValue: 'https://github.com/your-org/your-repo.git',
-            description: 'GitHub repository URL'
-        )
+            defaultValue: 'https://github.com/VinothShanmugam01-Cgw/deployment.git',
+            description: 'Git Repository URL'
+        
         string(
             name: 'GIT_BRANCH',
             defaultValue: 'main',
-            description: 'Branch to build and deploy'
-        )
-        string(
-            name: 'K8S_NAMESPACE',
-            defaultValue: 'production',
-            description: 'Kubernetes namespace to deploy into'
-        )
-        string(
-            name: 'RECIPIENT_EMAIL',
-            defaultValue: 'devops-team@your-org.com',
-            description: 'Email address for build notifications'
-        )
+            description: 'Git Branch'
+        
         string(
             name: 'DOCKER_IMAGE_NAME',
-            defaultValue: 'your-dockerhub-username/your-app-name',
-            description: 'Docker Hub image name (username/repo)'
-        )
-        string(
-            name: 'APP_NAME',
-            defaultValue: 'your-app',
-            description: 'Application name (used for K8s deployment name and labels)'
-        )
+            defaultValue: 'dockerhub-user/app',
+            description: 'Docker Image Name'
+        
         string(
             name: 'SONAR_PROJECT_KEY',
-            defaultValue: 'your-project-key',
-            description: 'SonarQube project key'
-        )
+            defaultValue: 'learning-k8s',
+            description: 'SonarQube Project Key'
+        
         string(
             name: 'K8S_API_SERVER',
-            defaultValue: 'https://your-k8s-api-server:6443',
-            description: 'On-prem Kubernetes API server URL'
-        )
-    }
+            defaultValue: 'https://192.168.7.27:6443',
+            description: 'Kubernetes API Server URL'
+        
+        string(
+            name: 'RECIPIENT_EMAIL',
+            defaultValue: 'devops-team@example.com',
+            description: 'Notification Email'
+        
+        choice(
+            name: 'DEPLOYMENT_STRATEGY',
+            choices: [
+                'Continuous Deployment',
+                'Continuous Delivery'
+            ],
+            description: 'Deployment Strategy'
+        
+    )
 
     environment {
         SONAR_HOME            = tool 'sonar-scanner'
@@ -50,46 +48,72 @@ pipeline {
         DOCKER_CREDENTIALS_ID = 'dockerhub-credentials'
         SONAR_TOKEN           = credentials('sonar-token')
         K8S_SA_TOKEN          = credentials('k8s-sa-token')
-        K8S_DEPLOYMENT_FILE   = 'k8s/deployment.yaml'
+        K8S_NAMESPACE         = 'learning-k8s'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                git branch: "${params.GIT_BRANCH}",
+                git(
+                    branch: params.GIT_BRANCH,
                     credentialsId: 'github-credentials',
-                    url: "${params.GIT_REPO_URL}"
+                    url: params.GIT_REPO_URL
+                
             }
         }
 
-        stage('Trivy FS Scan') {
+        stage('Trivy File Scan') {
             steps {
-                sh """
-                    trivy fs \
-                        --format table \
-                        --exit-code 0 \
-                        --severity HIGH,CRITICAL \
-                        --output trivy-fs-report.txt \
-                        .
+                bat """
+                trivy fs ^
+                  --severity HIGH,CRITICAL ^
+                  --exit-code 0 ^
+                  --output trivy-fs-report.txt ^
+                  .
                 """
             }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'trivy-fs-report.txt', allowEmptyArchive: true
-                }
+        }
+
+        stage('Start SonarQube Container') {
+            steps {
+                bat 'docker rm -f sonarqube || exit 0'
+
+                bat '''
+                docker run -d ^
+                  --name sonarqube ^
+                  -p 9000:9000 ^
+                  -v sonarqube_data:/opt/sonarqube/data ^
+                  sonarqube:community
+                '''
+
+                bat '''
+                @echo off
+                echo Waiting for SonarQube to be fully ready...
+                :loop
+                ping -n 16 127.0.0.1 > nul
+                curl.exe -s http://localhost:9000/api/system/status > status.txt
+                findstr /C:"\"UP\"" status.txt > nul
+                if %ERRORLEVEL%==0 goto ready
+                echo Not ready yet, retrying...
+                goto loop
+                :ready
+                echo SonarQube is UP and ready!
+                ping -n 31 127.0.0.1 > nul
+                echo Proceeding with analysis...
+                del status.txt
+                '''
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('sonar-server') {
-                    sh """
-                        ${SONAR_HOME}/bin/sonar-scanner \
-                            -Dsonar.projectName=${params.APP_NAME} \
-                            -Dsonar.projectKey=${params.SONAR_PROJECT_KEY} \
-                            -Dsonar.sources=. \
-                            -Dsonar.login=${SONAR_TOKEN}
+                    bat """
+                    %SONAR_HOME%\\bin\\sonar-scanner.bat ^
+                      -Dsonar.projectKey=${params.SONAR_PROJECT_KEY} ^
+                      -Dsonar.projectName=learning-k8s ^
+                      -Dsonar.sources=.
                     """
                 }
             }
@@ -97,164 +121,163 @@ pipeline {
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
+                timeout(time: 10, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
             }
         }
 
+        stage('Stop SonarQube Container') {
+            steps {
+                bat 'docker rm -f sonarqube || exit 0'
+            }
+        }
+
         stage('Docker Build') {
             steps {
-                sh "docker build -t ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG} ."
-                sh "docker tag ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG} ${params.DOCKER_IMAGE_NAME}:latest"
+                bat """
+                docker build ^
+                  -t ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG} .
+                """
+
+                bat """
+                docker tag ^
+                  ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG} ^
+                  ${params.DOCKER_IMAGE_NAME}:latest
+                """
             }
         }
 
         stage('Trivy Image Scan') {
             steps {
-                sh """
-                    trivy image \
-                        --format table \
-                        --exit-code 0 \
-                        --severity HIGH,CRITICAL \
-                        --output trivy-image-report.txt \
-                        ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG}
+                bat """
+                trivy image ^
+                  --severity HIGH,CRITICAL ^
+                  --exit-code 0 ^
+                  --output trivy-image-report.txt ^
+                  ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG}
                 """
             }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'trivy-image-report.txt', allowEmptyArchive: true
-                }
-            }
         }
 
-        stage('Push to Docker Hub') {
+        stage('Push Image') {
             steps {
-                withDockerRegistry(credentialsId: "${DOCKER_CREDENTIALS_ID}", url: 'https://index.docker.io/v1/') {
-                    sh "docker push ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG}"
-                    sh "docker push ${params.DOCKER_IMAGE_NAME}:latest"
+                withDockerRegistry(
+                    credentialsId: "${DOCKER_CREDENTIALS_ID}",
+                    url: 'https://index.docker.io/v1/'
+                 {
+                    bat """
+                    docker push ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG}
+                    docker push ${params.DOCKER_IMAGE_NAME}:latest
+                    """
                 }
             }
         }
 
-        stage('Deployment Strategy') {
-            steps {
-                script {
-                    def userInput = input(
-                        id: 'DeployStrategy',
-                        message: 'Choose deployment strategy for ' + params.APP_NAME + ':' + DOCKER_TAG,
-                        ok: 'Proceed',
-                        parameters: [
-                            choice(
-                                name: 'STRATEGY',
-                                choices: ['Continuous Deployment', 'Continuous Delivery'],
-                                description: 'Continuous Deployment = auto deploy | Continuous Delivery = manual approval required'
-                            )
-                        ]
-                    )
-                    env.DEPLOY_STRATEGY = userInput
-                }
-            }
-        }
-
-        stage('Confirm Deployment') {
+        stage('Approval') {
             when {
-                expression { env.DEPLOY_STRATEGY == 'Continuous Delivery' }
+                expression {
+                    params.DEPLOYMENT_STRATEGY == 'Continuous Delivery'
+                }
             }
             steps {
-                script {
-                    def approver = input(
-                        id: 'ApprovalGate',
-                        message: 'Approve deployment of ' + params.DOCKER_IMAGE_NAME + ':' + DOCKER_TAG + ' to namespace ' + params.K8S_NAMESPACE + '?',
-                        ok: 'Deploy Now',
-                        submitter: 'devops-team,release-manager',
-                        parameters: [
-                            string(
-                                name: 'APPROVAL_NOTES',
-                                defaultValue: '',
-                                description: 'Release notes or ticket reference'
-                            )
-                        ]
-                    )
-                    echo "Approved — Notes: ${approver.APPROVAL_NOTES}"
+                timeout(time: 30, unit: 'MINUTES') {
+                    input(
+                        message: "Build #${BUILD_NUMBER} is ready. Proceed to Deployment?",
+                        ok: "Proceed to Deployment"
+                    
                 }
             }
         }
 
-        stage('Deploy to K8s Cluster') {
+        stage('Deploy To Kubernetes') {
             steps {
-                sh """
-                    sed -i 's|IMAGE_PLACEHOLDER|${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG}|g' ${K8S_DEPLOYMENT_FILE}
-                    sed -i 's|NAMESPACE_PLACEHOLDER|${params.K8S_NAMESPACE}|g' ${K8S_DEPLOYMENT_FILE}
-                    sed -i 's|APP_NAME_PLACEHOLDER|${params.APP_NAME}|g' ${K8S_DEPLOYMENT_FILE}
+                bat """
+                copy k8s\\deployment.yaml deployment.yaml
 
-                    kubectl apply -f ${K8S_DEPLOYMENT_FILE} \
-                        --server=${params.K8S_API_SERVER} \
-                        --token=${K8S_SA_TOKEN} \
-                        --insecure-skip-tls-verify=true \
-                        -n ${params.K8S_NAMESPACE}
+                powershell -Command "(Get-Content deployment.yaml) -replace 'IMAGE_PLACEHOLDER', '${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG}' | Set-Content deployment.yaml"
 
-                    kubectl rollout status deployment/${params.APP_NAME}-deployment \
-                        --server=${params.K8S_API_SERVER} \
-                        --token=${K8S_SA_TOKEN} \
-                        --insecure-skip-tls-verify=true \
-                        -n ${params.K8S_NAMESPACE} \
-                        --timeout=120s
+                kubectl apply ^
+                  --server=${params.K8S_API_SERVER} ^
+                  --token=%K8S_SA_TOKEN% ^
+                  --insecure-skip-tls-verify=true ^
+                  -f k8s\\service.yaml
+
+                kubectl apply ^
+                  --server=${params.K8S_API_SERVER} ^
+                  --token=%K8S_SA_TOKEN% ^
+                  --insecure-skip-tls-verify=true ^
+                  -f deployment.yaml
+
+                kubectl rollout status ^
+                  deployment/learning-k8s-deployment ^
+                  -n %K8S_NAMESPACE% ^
+                  --server=${params.K8S_API_SERVER} ^
+                  --token=%K8S_SA_TOKEN% ^
+                  --insecure-skip-tls-verify=true ^
+                  --timeout=300s
                 """
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                sh """
-                    kubectl get pods \
-                        --server=${params.K8S_API_SERVER} \
-                        --token=${K8S_SA_TOKEN} \
-                        --insecure-skip-tls-verify=true \
-                        -n ${params.K8S_NAMESPACE} \
-                        -l app=${params.APP_NAME}
+                bat """
+                kubectl get pods ^
+                  -n %K8S_NAMESPACE% ^
+                  --server=${params.K8S_API_SERVER} ^
+                  --token=%K8S_SA_TOKEN% ^
+                  --insecure-skip-tls-verify=true
 
-                    kubectl get svc \
-                        --server=${params.K8S_API_SERVER} \
-                        --token=${K8S_SA_TOKEN} \
-                        --insecure-skip-tls-verify=true \
-                        -n ${params.K8S_NAMESPACE} \
-                        -l app=${params.APP_NAME}
+                kubectl get svc ^
+                  -n %K8S_NAMESPACE% ^
+                  --server=${params.K8S_API_SERVER} ^
+                  --token=%K8S_SA_TOKEN% ^
+                  --insecure-skip-tls-verify=true
                 """
             }
         }
     }
 
     post {
+
         success {
-            emailext (
-                subject: "SUCCESS: ${params.APP_NAME} Build #${BUILD_NUMBER} deployed to ${params.K8S_NAMESPACE}",
+            emailext(
+                subject: "SUCCESS - Build #${BUILD_NUMBER}",
                 body: """
-Build:     #${BUILD_NUMBER}
-App:       ${params.APP_NAME}
-Image:     ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG}
-Branch:    ${params.GIT_BRANCH}
-Namespace: ${params.K8S_NAMESPACE}
-Strategy:  ${env.DEPLOY_STRATEGY}
-URL:       ${BUILD_URL}
-                """,
+Application deployed successfully.
+
+Build Number  : ${BUILD_NUMBER}
+Image         : ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG}
+Namespace     : ${K8S_NAMESPACE}
+K8S API Server: ${params.K8S_API_SERVER}
+
+Build URL:
+${BUILD_URL}
+""",
                 to: "${params.RECIPIENT_EMAIL}"
-            )
+            
         }
+
         failure {
-            emailext (
-                subject: "FAILED: ${params.APP_NAME} Build #${BUILD_NUMBER}",
+            emailext(
+                subject: "FAILED - Build #${BUILD_NUMBER}",
                 body: """
-Build #${BUILD_NUMBER} failed.
-App:    ${params.APP_NAME}
-Branch: ${params.GIT_BRANCH}
-Check:  ${BUILD_URL}
-                """,
+Build failed.
+
+Build Number  : ${BUILD_NUMBER}
+K8S API Server: ${params.K8S_API_SERVER}
+
+Check:
+${BUILD_URL}
+""",
                 to: "${params.RECIPIENT_EMAIL}"
-            )
+            
         }
+
         always {
-            sh "docker rmi ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG} || true"
+            bat 'docker rm -f sonarqube || exit 0'
+            bat "docker rmi ${params.DOCKER_IMAGE_NAME}:${DOCKER_TAG} || exit 0"
             cleanWs()
         }
     }
